@@ -1,0 +1,79 @@
+name: Deployment of .NET Application
+
+on:
+  push:
+    branches:
+      - "master"
+
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}  # AWS region to deploy to
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}  # ECR repository name
+  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}  # ECS service name
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}  # ECS cluster name
+  CONTAINER_NAME: ${{ secrets.CONTAINER_NAME }}  # Name of the container in the task definition
+  ECS_LAUNCH_TYPE: ${{ secrets.ECS_LAUNCH_TYPE }}  # Launch type: EC2 or FARGATE
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: development
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}  # AWS access key
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}  # AWS secret key
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push Docker image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}  # ECR registry URL
+          IMAGE_TAG: ${{ github.sha }}  # Use the Git commit SHA as the image tag
+        run: |
+          docker build -t $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Choose Task Definition
+        id: choose-task-def
+        run: |
+          if [ "${{ env.ECS_LAUNCH_TYPE }}" == "FARGATE" ]; then
+            echo "Using Fargate task definition"
+            echo "ECS_TASK_DEFINITION_FARGATE.json" >> $GITHUB_ENV
+          else
+            echo "Using EC2 task definition"
+            echo "ECS_TASK_DEFINITION_EC2.json" >> $GITHUB_ENV
+          fi
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_LAUNCH_TYPE == 'FARGATE' && env.ECS_TASK_DEFINITION_FARGATE || env.ECS_TASK_DEFINITION_EC2 }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ env.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Force new deployment
+        run: |
+          aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service ${{ env.ECS_SERVICE }} --force-new-deployment
+

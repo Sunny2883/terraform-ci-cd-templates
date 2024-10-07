@@ -1,0 +1,43 @@
+name: React App Deployment
+
+on:
+  push:
+    branches: ["master"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18.20.4'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Create .env File
+        run: |
+          echo "VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}" >> .env
+
+      - name: Build Project
+        run: npm run build
+
+      - name: Set Up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}  # Use a variable for region
+
+      - name: Copy Files to S3
+        run: |
+          BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}  # Use a variable for bucket name
+          aws s3 cp dist/ s3://$BUCKET_NAME/ --recursive
+          aws s3 cp dist/vite.svg s3://BUCKET_NAME/vite.svg
+         
+          aws s3 cp dist/assets s3://BUCKET_NAME/assets --recursive
